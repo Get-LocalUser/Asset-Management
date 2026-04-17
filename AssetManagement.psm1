@@ -162,7 +162,7 @@ function Search-BulkComputers {
 
         # Show progress
         Write-Host "[$counter/$($computers.Count)] $computerName" -ForegroundColor Cyan
-`
+
         $deviceInfo = Search-SingleComputer -ComputerName $computerName
 
         $Check = "✓"

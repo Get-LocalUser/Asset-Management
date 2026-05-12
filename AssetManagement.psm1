@@ -37,7 +37,7 @@ function Search-SingleComputer {
         [string]$ComputerName
     )
 
-    Connect-MgGraph -Scopes "DeviceManagementManagedDevices.Read.All" -NoWelcome
+    Connect-MgGraph -Scopes "DeviceManagementManagedDevices.Read.All", "Device.Read.All" -NoWelcome
 
     # Define the PSCustomObject for output
     $deviceresult = [PSCustomObject]@{
@@ -47,10 +47,15 @@ function Search-SingleComputer {
         AD_ComputerFound        = $false
         AD_ComputerName         = $null
 
+        # Entra ID
+        EntraID_ComputerFound   = $false
+        EntraID_ComputerName    = $null
+
         # Intune
         Intune_ComputerFound    = $false
         Intune_ComputerName     = $null
         Intune_SerialNumber     = $null
+        Intune_AzureADDeviceId  = $null
 
         # Autopilot
         Autopilot_ComputerFound = $false
@@ -79,22 +84,39 @@ function Search-SingleComputer {
     # Get Intune computer
     $Compresults = Get-MgBetaDeviceManagementManagedDevice -Filter "deviceName eq '$ComputerName'"
     if ($Compresults.Count -gt 1) {
-        Write-Host "Multiple Intune computers found. Verify entries before deleting" -ForegroundColor Red
-        $compresults | ForEach-Object {Write-Host "Intune: $($_.DeviceName)"} 
+        Write-Host "`nMultiple Intune computers found. Verify entries before deleting`n" -ForegroundColor Red
+        $compresults | ForEach-Object {Write-Host "Intune: $($_.DeviceName)"}
     } elseif ($Compresults) {
         $deviceresult.Intune_ComputerFound   = $true
         $deviceresult.Intune_ComputerName    = $Compresults.DeviceName
         $deviceresult.Intune_SerialNumber    = $Compresults.SerialNumber
+        $deviceresult.Intune_AzureADDeviceId = $Compresults.AzureADDeviceId
+    }
+
+    # Get Entra ID device — matched by AzureADDeviceId attribute from Intune to avoid name duplicates. If no Entra device tied to the Intune AzureADDeviceId attribute is found this will result in nothing.
+    if ($deviceresult.Intune_AzureADDeviceId) {
+        try {
+            $EntraResults = Get-MgBetaDevice -Filter "deviceId eq '$($deviceresult.Intune_AzureADDeviceId)'" -ErrorAction Stop
+        }
+        catch {
+            $EntraResults = $null
+        }
+
+        if ($EntraResults) {
+            $deviceresult.EntraID_ComputerFound = $true
+            $deviceresult.EntraID_ComputerName  = $EntraResults.DisplayName
+        }
     }
 
     # Get Autopilot enrollment
+    $Compresults = $null
     if ($deviceresult.Intune_SerialNumber) {
         $Compresults = Get-MgBetaDeviceManagementWindowsAutopilotDeviceIdentity -ErrorAction SilentlyContinue | Where-Object { $_.SerialNumber -eq $deviceresult.Intune_SerialNumber }
     }
-    
+
     if ($Compresults.Count -gt 1) {
-        Write-Host "Multiple Autopilot devices found. Verify entries before deleting" -ForegroundColor Red
-        $compresults | ForEach-Object {Write-Host "Autopilot: $($_.DisplayName)"} 
+        Write-Host "`nMultiple Autopilot devices found. Verify entries before deleting" -ForegroundColor Red
+        $compresults | ForEach-Object {Write-Host "Autopilot: $($_.DisplayName)"}
     } elseif ($Compresults) {
         $deviceresult.Autopilot_ComputerFound = $true
         $deviceresult.Autopilot_SerialNumber  = $Compresults.SerialNumber
@@ -102,9 +124,9 @@ function Search-SingleComputer {
 
 
     # Display results of previous checks
-    if ($deviceresult.AD_ComputerFound -or $deviceresult.Intune_ComputerFound -or $deviceresult.Autopilot_ComputerFound) {
+    if ($deviceresult.AD_ComputerFound -or $deviceresult.EntraID_ComputerFound -or $deviceresult.Intune_ComputerFound -or $deviceresult.Autopilot_ComputerFound) {
         Write-Host "Device found in one or more systems." -ForegroundColor Yellow
-    } else { 
+    } else {
         Write-Host "No devices found in any system." -ForegroundColor Red
     }
 
@@ -113,6 +135,7 @@ function Search-SingleComputer {
         ComputerName    = $deviceresult.InputName
         ActiveDirectory = if ($deviceresult.AD_ComputerFound)       { $Check } else { "False" }
         Intune          = if ($deviceresult.Intune_ComputerFound)   { $Check } else { "False" }
+        EntraID         = if ($deviceresult.EntraID_ComputerFound)  { $Check } else { "False" }
         Autopilot       = if ($deviceresult.Autopilot_ComputerFound){ $Check } else { "False" }
     }
 
@@ -170,6 +193,7 @@ function Search-BulkComputers {
             ComputerName     = $computerName
             ActiveDirectory  = if ($deviceInfo.AD_ComputerFound)       { $check } else { "False" }
             Intune           = if ($deviceInfo.Intune_ComputerFound)   { $check } else { "False" }
+            EntraID          = if ($deviceInfo.EntraID_ComputerFound)  { $check } else { "False" }
             Autopilot        = if ($deviceInfo.Autopilot_ComputerFound){ $check } else { "False" }
         }
 
@@ -185,12 +209,14 @@ function Search-BulkComputers {
     $Pathway = "C:\Users\$env:USERNAME\Downloads\"
     $ExportFile = Join-Path -Path $Pathway -ChildPath "Computersfound.csv"
 
-    if ($results) { 
+    if ($results) {
         $Utf8WithBom = New-Object System.Text.UTF8Encoding $true
         $csvContent = $results | ConvertTo-Csv -NoTypeInformation | Out-String
         [System.IO.File]::WriteAllText($ExportFile, $csvContent, $Utf8WithBom)
         Write-Host "`nResults exported to: $ExportFile" -ForegroundColor Yellow
         Write-Host "`nOpen in Excel for best visual." -ForegroundColor Magenta
+        Write-Host "`nNote: An Entra ID object is returned only when a matching Intune object with the same AzureADDeviceId attribute exists." -ForegroundColor Blue
+        Write-Host "If no matching Intune object exists, the result is null. This avoids conflicts when names are duplicated." -ForegroundColor Blue
     }
     else {
         Write-Host "Not exported" -ForegroundColor Yellow
@@ -202,6 +228,351 @@ function Search-BulkComputers {
 
     return $results
     Write-Host "`nOpen in Excel for best visual." -ForegroundColor Magenta
+}
+
+function Search-SingleiOSDevice {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Serial
+    )
+
+    Connect-MgGraph -Scopes "DeviceManagementManagedDevices.Read.All", "Device.Read.All" -NoWelcome
+
+    $Serial = $Serial.Trim()
+    $DeviceName = "iPhone-$Serial-NamedUser"
+
+    $deviceresult = [PSCustomObject]@{
+        InputSerial     = $Serial
+        ConstructedName = $DeviceName
+
+        # Intune
+        Intune_DeviceFound      = $false
+        Intune_DeviceName       = $null
+        Intune_SerialNumber     = $null
+        Intune_AzureADDeviceId  = $null
+
+        # Entra ID
+        EntraID_DeviceFound     = $false
+        EntraID_DeviceName      = $null
+    }
+
+    Write-Host "Searching for: $DeviceName" -ForegroundColor Yellow
+
+    # Get Intune device by constructed name
+    $IntuneResults = Get-MgBetaDeviceManagementManagedDevice -Filter "deviceName eq '$DeviceName'"
+
+    if ($IntuneResults.Count -gt 1) {
+        Write-Host "`nMultiple Intune devices found for serial '$Serial'. Verify entries before deleting.`n" -ForegroundColor Red
+        $IntuneResults | ForEach-Object { Write-Host "Intune: $($_.DeviceName)" }
+    }
+    elseif ($IntuneResults) {
+        $deviceresult.Intune_DeviceFound     = $true
+        $deviceresult.Intune_DeviceName      = $IntuneResults.DeviceName
+        $deviceresult.Intune_SerialNumber    = $IntuneResults.SerialNumber
+        $deviceresult.Intune_AzureADDeviceId = $IntuneResults.AzureADDeviceId
+    }
+
+    # Get Entra ID device matched by AzureADDeviceId from Intune
+    if ($deviceresult.Intune_AzureADDeviceId) {
+        try {
+            $EntraResults = Get-MgBetaDevice -Filter "deviceId eq '$($deviceresult.Intune_AzureADDeviceId)'" -ErrorAction Stop
+        }
+        catch {
+            $EntraResults = $null
+        }
+
+        if ($EntraResults) {
+            $deviceresult.EntraID_DeviceFound = $true
+            $deviceresult.EntraID_DeviceName  = $EntraResults.DisplayName
+        }
+    }
+
+    # Display results
+    if ($deviceresult.Intune_DeviceFound -or $deviceresult.EntraID_DeviceFound) {
+        Write-Host "Device found in one or more systems." -ForegroundColor Yellow
+    }
+    else {
+        Write-Host "No devices found for serial: $Serial" -ForegroundColor Red
+    }
+
+    $Check = "✓"
+    $output = [PSCustomObject]@{
+        Serial          = $deviceresult.InputSerial
+        ConstructedName = $deviceresult.ConstructedName
+        Intune          = if ($deviceresult.Intune_DeviceFound)  { $Check } else { "False" }
+        EntraID         = if ($deviceresult.EntraID_DeviceFound) { $Check } else { "False" }
+    }
+
+    $output | Format-Table -AutoSize
+
+    return $deviceresult
+}
+
+function Search-BulkiOSDevices {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$CsvPath,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$Transcript
+    )
+
+    if ($Transcript) {
+        $logpath = "$($env:USERPROFILE)\Downloads"
+        $logname = (Get-Date -Format "yyyy-MM-dd_HH-mm") + "_search_bulk_ios_devices_script.log"
+        Start-Transcript -Path "$logpath\$logname" -Verbose
+    }
+
+    Connect-MgGraph -Scopes "DeviceManagementManagedDevices.Read.All", "Device.Read.All" -NoWelcome
+
+    if (-not (Test-Path $CsvPath)) {
+        Write-Host "CSV file not found: $CsvPath" -ForegroundColor Red
+        return
+    }
+
+    try {
+        $devices = Import-Csv $CsvPath
+        Write-Host "`nProcessing $($devices.Count) devices from CSV..." -ForegroundColor Yellow
+
+        $results = @()
+        $counter = 0
+
+        foreach ($row in $devices) {
+            $counter++
+            $Serial = $row.'Serial'
+
+            if ([string]::IsNullOrWhiteSpace($Serial)) {
+                Write-Host "[$counter/$($devices.Count)] Skipping empty serial number" -ForegroundColor Yellow
+                continue
+            }
+
+            Write-Host "[$counter/$($devices.Count)] $Serial" -ForegroundColor Cyan
+
+            $deviceInfo = Search-SingleiOSDevice -Serial $Serial
+
+            $Check = "✓"
+            $result = [PSCustomObject]@{
+                Serial          = $Serial
+                ConstructedName = $deviceInfo.ConstructedName
+                Intune          = if ($deviceInfo.Intune_DeviceFound)  { $Check } else { "False" }
+                EntraID         = if ($deviceInfo.EntraID_DeviceFound) { $Check } else { "False" }
+            }
+
+            $results += $result
+        }
+    }
+    catch {
+        Write-Host "Error processing CSV: $($_.Exception.Message)" -ForegroundColor Red
+    }
+
+    # Print results and export to a CSV in the user's Downloads folder
+    $Pathway = "C:\Users\$env:USERNAME\Downloads\"
+    $ExportFile = Join-Path -Path $Pathway -ChildPath "iOSDevicesFound.csv"
+
+    if ($results) {
+        $Utf8WithBom = New-Object System.Text.UTF8Encoding $true
+        $csvContent = $results | ConvertTo-Csv -NoTypeInformation | Out-String
+        [System.IO.File]::WriteAllText($ExportFile, $csvContent, $Utf8WithBom)
+        Write-Host "`nResults exported to: $ExportFile" -ForegroundColor Yellow
+        Write-Host "`nOpen in Excel for best visual." -ForegroundColor Magenta
+        Write-Host "`nNote: Entra ID is only returned when a matching Intune object with the same AzureADDeviceId attribute exists." -ForegroundColor Blue
+    }
+    else {
+        Write-Host "Not exported — no results." -ForegroundColor Yellow
+    }
+
+    if ($Transcript) {
+        Stop-Transcript
+    }
+
+    return $results
+}
+
+function Remove-SingleiOSDevice {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Serial
+    )
+
+    Connect-MgGraph -Scopes "DeviceManagementManagedDevices.ReadWrite.All", "Device.Read.All", "Device.ReadWrite.All" -NoWelcome
+
+    $Serial = $Serial.Trim()
+    $DeviceName = "iPhone-$Serial-NamedUser"
+
+    $deviceresult = [PSCustomObject]@{
+        InputSerial     = $Serial
+        ConstructedName = $DeviceName
+
+        # Intune
+        Intune_DeviceFound     = $false
+        Intune_DeviceName      = $null
+        Intune_DeviceId        = $null
+        Intune_AzureADDeviceId = $null
+        Intune_Deleted         = $false
+
+        # Entra ID
+        EntraID_DeviceFound = $false
+        EntraID_DeviceName  = $null
+        EntraID_Deleted     = $false
+    }
+
+    Write-Host "Processing: $DeviceName" -ForegroundColor Yellow
+
+    # --- Intune ---
+    Write-Host "Checking Intune for $DeviceName..." -ForegroundColor Yellow
+    $IntuneResults = Get-MgBetaDeviceManagementManagedDevice -Filter "deviceName eq '$DeviceName'" -ErrorAction SilentlyContinue
+
+    if ($IntuneResults.Count -gt 1) {
+        Write-Host "`nMultiple Intune devices found for serial '$Serial'. Verify entries before deleting.`n" -ForegroundColor Red
+        $IntuneResults | ForEach-Object { Write-Host "Intune: $($_.DeviceName)" }
+    }
+    elseif ($IntuneResults) {
+        $deviceresult.Intune_DeviceFound     = $true
+        $deviceresult.Intune_DeviceName      = $IntuneResults.DeviceName
+        $deviceresult.Intune_DeviceId        = $IntuneResults.Id
+        $deviceresult.Intune_AzureADDeviceId = $IntuneResults.AzureADDeviceId
+
+        Write-Host "$DeviceName found in Intune." -ForegroundColor Yellow
+        try {
+            Remove-MgBetaDeviceManagementManagedDevice -ManagedDeviceId $IntuneResults.Id -ErrorAction Stop
+            Write-Host "$DeviceName removed from Intune." -ForegroundColor Green
+            $deviceresult.Intune_Deleted = $true
+        } catch {
+            Write-Host "Failed to remove $DeviceName from Intune: $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
+    else {
+        Write-Host "$DeviceName NOT found in Intune." -ForegroundColor Red
+    }
+
+    # --- Entra ID ---
+    Write-Host "Checking Entra ID for $DeviceName..." -ForegroundColor Yellow
+    if ($deviceresult.Intune_AzureADDeviceId) {
+        try {
+            $EntraResults = Get-MgBetaDevice -Filter "deviceId eq '$($deviceresult.Intune_AzureADDeviceId)'" -ErrorAction Stop
+        }
+        catch {
+            $EntraResults = $null
+        }
+
+        if ($EntraResults) {
+            $deviceresult.EntraID_DeviceFound = $true
+            $deviceresult.EntraID_DeviceName  = $EntraResults.DisplayName
+
+            Write-Host "$DeviceName found in Entra ID." -ForegroundColor Yellow
+            try {
+                Remove-MgBetaDevice -DeviceId $EntraResults.Id -ErrorAction Stop
+                Write-Host "$DeviceName removed from Entra ID." -ForegroundColor Green
+                $deviceresult.EntraID_Deleted = $true
+            } catch {
+                Write-Host "Failed to remove $DeviceName from Entra ID: $($_.Exception.Message)" -ForegroundColor Red
+            }
+        }
+        else {
+            Write-Host "$DeviceName NOT found in Entra ID." -ForegroundColor Red
+        }
+    }
+    else {
+        Write-Host "No AzureADDeviceId found for $DeviceName in Intune. Cannot search Entra ID." -ForegroundColor Yellow
+    }
+
+    # Display results
+    $Check = "✓"
+    $output = [PSCustomObject]@{
+        Serial          = $deviceresult.InputSerial
+        ConstructedName = $deviceresult.ConstructedName
+        Intune          = if ($deviceresult.Intune_Deleted)  { $Check } elseif ($deviceresult.Intune_DeviceFound)  { "Found - Not Deleted" } else { "Not Found" }
+        EntraID         = if ($deviceresult.EntraID_Deleted) { $Check } elseif ($deviceresult.EntraID_DeviceFound) { "Found - Not Deleted" } else { "Not Found" }
+    }
+
+    $output | Format-Table -AutoSize
+
+    return $deviceresult
+}
+
+function Remove-BulkiOSDevices {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$CsvPath,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$Transcript
+    )
+
+    if ($Transcript) {
+        $logpath = "$($env:USERPROFILE)\Downloads"
+        $logname = (Get-Date -Format "yyyy-MM-dd_HH-mm") + "_remove_bulk_ios_devices_script.log"
+        Start-Transcript -Path "$logpath\$logname" -Verbose
+    }
+
+    Connect-MgGraph -Scopes "DeviceManagementManagedDevices.ReadWrite.All", "Device.Read.All", "Device.ReadWrite.All" -NoWelcome
+
+    if (-not (Test-Path $CsvPath)) {
+        Write-Host "CSV file not found: $CsvPath" -ForegroundColor Red
+        return
+    }
+
+    try {
+        $devices = Import-Csv $CsvPath
+        Write-Host "`nProcessing $($devices.Count) devices from CSV..." -ForegroundColor Yellow
+
+        $results = @()
+        $counter = 0
+
+        foreach ($row in $devices) {
+            $counter++
+            $Serial = $row.'Serial'
+
+            if ([string]::IsNullOrWhiteSpace($Serial)) {
+                Write-Host "[$counter/$($devices.Count)] Skipping empty serial number" -ForegroundColor Yellow
+                continue
+            }
+
+            Write-Host "[$counter/$($devices.Count)] $Serial" -ForegroundColor Cyan
+
+            $deviceInfo = Remove-SingleiOSDevice -Serial $Serial
+
+            $Check = "✓"
+            $result = [PSCustomObject]@{
+                Serial          = $Serial
+                ConstructedName = $deviceInfo.ConstructedName
+                IntuneStatus    = if ($deviceInfo.Intune_Deleted)  { $Check } elseif ($deviceInfo.Intune_DeviceFound)  { "Found - Not Deleted" } else { "Not Found" }
+                EntraIDStatus   = if ($deviceInfo.EntraID_Deleted) { $Check } elseif ($deviceInfo.EntraID_DeviceFound) { "Found - Not Deleted" } else { "Not Found" }
+            }
+
+            $results += $result
+        }
+    }
+    catch {
+        Write-Host "Error processing CSV: $($_.Exception.Message)" -ForegroundColor Red
+    }
+
+    # Print results and export to a CSV in the user's Downloads folder
+    $timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm"
+    $Pathway = "C:\Users\$env:USERNAME\Downloads\"
+    $ExportFile = Join-Path -Path $Pathway -ChildPath "iOSDevicesRemoved_$timestamp.csv"
+
+    if ($results) {
+        $Utf8WithBom = New-Object System.Text.UTF8Encoding $true
+        $csvContent = $results | ConvertTo-Csv -NoTypeInformation | Out-String
+        [System.IO.File]::WriteAllText($ExportFile, $csvContent, $Utf8WithBom)
+        Write-Host "`nResults exported to: $ExportFile" -ForegroundColor Yellow
+        Write-Host "`nOpen in Excel for best visual." -ForegroundColor Magenta
+        Write-Host "`nNote: Entra ID is only removed when a matching Intune object with the same AzureADDeviceId attribute exists." -ForegroundColor Blue
+    }
+    else {
+        Write-Host "Not exported — no results." -ForegroundColor Yellow
+    }
+
+    if ($Transcript) {
+        Stop-Transcript
+    }
+
+    return $results
 }
 
 function Remove-SingleComputer {
@@ -220,7 +591,7 @@ function Remove-SingleComputer {
     Start-Transcript -Path "$logpath\$logname" -Verbose
     }
 
-    Connect-MgGraph -Scopes "DeviceManagementServiceConfig.Read.All", "DeviceManagementServiceConfig.ReadWrite.All" -NoWelcome
+    Connect-MgGraph -Scopes "DeviceManagementServiceConfig.Read.All", "DeviceManagementServiceConfig.ReadWrite.All", "Device.Read.All", "Device.ReadWrite.All" -NoWelcome
 
     # --- Active Directory ---
     Write-Host "Checking Active Directory for $ComputerName..." -ForegroundColor Yellow
@@ -229,7 +600,7 @@ function Remove-SingleComputer {
     } catch {
         $adComputer = $null
     }
-    
+
     if (-not $adComputer) {
         Write-Host "$ComputerName NOT found in Active Directory" -ForegroundColor Red
     } else {
@@ -241,7 +612,7 @@ function Remove-SingleComputer {
             Write-Host "Failed to delete $ComputerName from AD" -ForegroundColor Red
         }
     }
-    
+
     # --- Intune ---
     Write-Host "Checking Intune for $ComputerName..." -ForegroundColor Yellow
     try {
@@ -249,12 +620,12 @@ function Remove-SingleComputer {
     } catch {
         $matchedDevice = $null
     }
-    
+
     if (-not $matchedDevice) {
         Write-Host "$ComputerName NOT found in Intune" -ForegroundColor Red
         return  # Early exit since no device found
     }
-    
+
     # Device found in Intune
     Write-Host "$ComputerName found in Intune" -ForegroundColor Yellow
     try {
@@ -263,7 +634,31 @@ function Remove-SingleComputer {
     } catch {
         Write-Host "Failed to remove $ComputerName from Intune: $($_.Exception.Message)" -ForegroundColor Red
     }
-    
+
+    # --- Entra ID ---
+    Write-Host "Checking Entra ID for $ComputerName..." -ForegroundColor Yellow
+    if ($matchedDevice.AzureADDeviceId) {
+        try {
+            $EntraIDDevice = Get-MgBetaDevice -Filter "deviceId eq '$($matchedDevice.AzureADDeviceId)'" -ErrorAction Stop
+        } catch {
+            $EntraIDDevice = $null
+        }
+
+        if ($EntraIDDevice) {
+            Write-Host "$ComputerName found in Entra ID" -ForegroundColor Yellow
+            try {
+                Remove-MgBetaDevice -DeviceId $EntraIDDevice.Id -ErrorAction Stop
+                Write-Host "$ComputerName removed from Entra ID." -ForegroundColor Green
+            } catch {
+                Write-Host "Failed to remove $ComputerName from Entra ID: $($_.Exception.Message)" -ForegroundColor Red
+            }
+        } else {
+            Write-Host "$ComputerName NOT found in Entra ID" -ForegroundColor Red
+        }
+    } else {
+        Write-Host "No AzureADDeviceId found for $ComputerName in Intune. Cannot search Entra ID." -ForegroundColor Yellow
+    }
+
     # --- Autopilot ---
     if (-not $matchedDevice.SerialNumber) {
         Write-Host "No serial number found for device in Intune." -ForegroundColor Yellow
@@ -311,7 +706,7 @@ function Remove-BulkComputers {
         Start-Transcript -Path "$logpath\$logname" -Verbose
     }
 
-    Connect-MgGraph -Scopes "DeviceManagementServiceConfig.Read.All", "DeviceManagementServiceConfig.ReadWrite.All" -NoWelcome
+    Connect-MgGraph -Scopes "DeviceManagementServiceConfig.Read.All", "DeviceManagementServiceConfig.ReadWrite.All", "Device.Read.All", "Device.ReadWrite.All" -NoWelcome
 
     # --- File Picker UI if path not provided ---
     if (-not $CsvPath) {
@@ -351,6 +746,7 @@ function Remove-BulkComputers {
             ComputerName    = $ComputerName
             ADStatus        = "Not Attempted"
             IntuneStatus    = "Not Attempted"
+            EntraIDStatus   = "Not Attempted"
             AutopilotStatus = "Not Attempted"
         }
 
@@ -409,6 +805,34 @@ function Remove-BulkComputers {
             $result.IntuneStatus = "Error: $($_.Exception.Message)"
             $results += $result
             continue
+        }
+
+        # --- Entra ID ---
+        Write-Host "[$counter] Checking Entra ID for $ComputerName..." -ForegroundColor Yellow
+        if ($matchedDevice.AzureADDeviceId) {
+            try {
+                $EntraIDDevice = Get-MgBetaDevice -Filter "deviceId eq '$($matchedDevice.AzureADDeviceId)'" -ErrorAction SilentlyContinue
+            } catch {
+                $EntraIDDevice = $null
+            }
+
+            if ($EntraIDDevice) {
+                Write-Host "[$counter] $ComputerName found in Entra ID" -ForegroundColor Yellow
+                try {
+                    Remove-MgBetaDevice -DeviceId $EntraIDDevice.Id -ErrorAction SilentlyContinue
+                    Write-Host "[$counter] $ComputerName removed from Entra ID." -ForegroundColor Green
+                    $result.EntraIDStatus = "Deleted"
+                } catch {
+                    Write-Host "[$counter] Failed to remove $ComputerName from Entra ID: $($_.Exception.Message)" -ForegroundColor Red
+                    $result.EntraIDStatus = "Error: $($_.Exception.Message)"
+                }
+            } else {
+                Write-Host "[$counter] $ComputerName NOT found in Entra ID" -ForegroundColor Red
+                $result.EntraIDStatus = "Not Found"
+            }
+        } else {
+            Write-Host "[$counter] No AzureADDeviceId found for $ComputerName in Intune. Cannot search Entra ID." -ForegroundColor Yellow
+            $result.EntraIDStatus = "No AzureADDeviceId"
         }
 
         # --- Autopilot ---
@@ -654,6 +1078,10 @@ if ($skus.ConsumedUnits -ge $skus.ActiveUnits) {
 Export-ModuleMember -Function Initialize-Modules
 Export-ModuleMember -Function Search-SingleComputer
 Export-ModuleMember -Function Search-BulkComputers
+Export-ModuleMember -Function Search-SingleiOSDevice
+Export-ModuleMember -Function Search-BulkiOSDevices
+Export-ModuleMember -Function Remove-SingleiOSDevice
+Export-ModuleMember -Function Remove-BulkiOSDevices
 Export-ModuleMember -Function Remove-SingleComputer
 Export-ModuleMember -Function Remove-BulkComputers
 Export-ModuleMember -Function Get-LastLoggedInUser

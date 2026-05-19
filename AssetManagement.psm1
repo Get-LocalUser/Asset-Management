@@ -30,7 +30,7 @@ function Initialize-Modules {
     Write-Host "Graph module imported successfully." -ForegroundColor Yellow
 }
 
-function Search-SingleComputer {
+function Get-SingleComputer {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
@@ -144,7 +144,7 @@ function Search-SingleComputer {
     return $deviceresult
 }
 
-function Search-BulkComputers {
+function Get-BulkComputers {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
@@ -186,7 +186,7 @@ function Search-BulkComputers {
         # Show progress
         Write-Host "[$counter/$($computers.Count)] $computerName" -ForegroundColor Cyan
 
-        $deviceInfo = Search-SingleComputer -ComputerName $computerName
+        $deviceInfo = Get-SingleComputer -ComputerName $computerName
 
         $Check = "✓"
         $result = [PSCustomObject]@{
@@ -230,7 +230,7 @@ function Search-BulkComputers {
     Write-Host "`nOpen in Excel for best visual." -ForegroundColor Magenta
 }
 
-function Search-SingleiOSDevice {
+function Get-SingleiOSDevice {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
@@ -309,7 +309,7 @@ function Search-SingleiOSDevice {
     return $deviceresult
 }
 
-function Search-BulkiOSDevices {
+function Get-BulkiOSDevices {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
@@ -350,7 +350,7 @@ function Search-BulkiOSDevices {
 
             Write-Host "[$counter/$($devices.Count)] $Serial" -ForegroundColor Cyan
 
-            $deviceInfo = Search-SingleiOSDevice -Serial $Serial
+            $deviceInfo = Get-SingleiOSDevice -Serial $Serial
 
             $Check = "✓"
             $result = [PSCustomObject]@{
@@ -1076,16 +1076,16 @@ if ($skus.ConsumedUnits -ge $skus.ActiveUnits) {
 }
 
 Export-ModuleMember -Function Initialize-Modules
-Export-ModuleMember -Function Search-SingleComputer
-Export-ModuleMember -Function Search-BulkComputers
-Export-ModuleMember -Function Search-SingleiOSDevice
-Export-ModuleMember -Function Search-BulkiOSDevices
+Export-ModuleMember -Function New-TAP
+Export-ModuleMember -Function Get-LastLoggedInUser
+Export-ModuleMember -Function Get-AllUserMDMManagedDevices
+Export-ModuleMember -Function Get-AllUserEntraRegisteredDevices
+Export-ModuleMember -Function Get-RemainingE5Licenses
+Export-ModuleMember -Function Get-SingleComputer
+Export-ModuleMember -Function Get-BulkComputers
+Export-ModuleMember -Function Get-SingleiOSDevice
+Export-ModuleMember -Function Get-BulkiOSDevices
 Export-ModuleMember -Function Remove-SingleiOSDevice
 Export-ModuleMember -Function Remove-BulkiOSDevices
 Export-ModuleMember -Function Remove-SingleComputer
 Export-ModuleMember -Function Remove-BulkComputers
-Export-ModuleMember -Function Get-LastLoggedInUser
-Export-ModuleMember -Function Get-AllUserMDMManagedDevices
-Export-ModuleMember -Function Get-AllUserEntraRegisteredDevices
-Export-ModuleMember -Function New-TAP
-Export-ModuleMember -Function Get-RemainingE5Licenses
